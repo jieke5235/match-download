@@ -42,6 +42,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,7 +67,7 @@ jobs:
             librsvg2-dev
 
       - name: Install frontend dependencies
-        run: npm install
+        run: pnpm install
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
