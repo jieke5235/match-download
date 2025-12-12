@@ -80,11 +80,18 @@ else
     sed -i "s/^version = \".*\"/version = \"$VERSION_NUMBER\"/" src-tauri/Cargo.toml
 fi
 
+# 更新 package.json
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION_NUMBER\",/" package.json
+else
+    sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION_NUMBER\",/" package.json
+fi
+
 print_success "版本号已更新"
 
 # 提交更改
 print_info "提交版本更新..."
-git add src-tauri/tauri.conf.json src-tauri/Cargo.toml
+git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
 git commit -m "chore: bump version to $VERSION" || print_warning "没有需要提交的更改"
 
 # 创建 tag

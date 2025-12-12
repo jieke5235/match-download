@@ -1,0 +1,115 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: v1.0.0)'
+        required: false
+        default: 'v0.1.0'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            target: 'aarch64-apple-darwin'
+            name: 'macOS ARM64'
+          - platform: 'macos-latest'
+            target: 'x86_64-apple-darwin'
+            name: 'macOS x64'
+          - platform: 'ubuntu-22.04'
+            target: 'x86_64-unknown-linux-gnu'
+            name: 'Linux x64'
+          - platform: 'windows-latest'
+            target: 'x86_64-pc-windows-msvc'
+            name: 'Windows x64'
+
+    runs-on: ${{ matrix.platform }}
+    name: Build ${{ matrix.name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: '位来足迹-校赛作品下载器 ${{ github.ref_name }}'
+          releaseBody: |
+            ## 更新内容
+            
+            请查看提交历史了解详细更新内容。
+            
+            ## 下载说明
+            
+            - **Windows**: 下载 `.msi` 或 `.exe` 文件
+            - **macOS ARM64 (M1/M2/M3/M4)**: 下载 `aarch64.dmg` 文件
+            - **macOS Intel**: 下载 `x64.dmg` 文件
+            - **Linux**: 下载 `.AppImage` 或 `.deb` 文件
+            
+            ## 安装说明
+            
+            ### Windows
+            1. 下载 `.msi` 安装包
+            2. 双击运行安装程序
+            3. 按照提示完成安装
+            
+            ### macOS
+            1. 下载对应架构的 `.dmg` 文件
+            2. 打开 DMG 文件
+            3. 将应用拖入 Applications 文件夹
+            4. 首次运行可能需要在"系统偏好设置 > 安全性与隐私"中允许运行
+            
+            ### Linux
+            1. 下载 `.AppImage` 文件
+            2. 添加执行权限: `chmod +x *.AppImage`
+            3. 直接运行: `./位来足迹-校赛作品下载器_*.AppImage`
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-artifacts
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+          retention-days: 7
