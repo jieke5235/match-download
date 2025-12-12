@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "shell:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://job3.posedu.cn/*"
+        },
+        {
+          "url": "https://*.job3.posedu.cn/*"
+        },
+        {
+          "url": "http://localhost:3000/*"
+        }
+      ]
+    }
+  ]
+}
