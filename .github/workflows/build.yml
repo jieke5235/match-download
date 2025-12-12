@@ -80,7 +80,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: '位来足迹-校赛作品下载器 ${{ github.ref_name }}'
+          releaseName: 'WLZJ Match Downloader (位来足迹-校赛作品下载器) ${{ github.ref_name }}'
           releaseBody: |
             ## 更新内容
             
