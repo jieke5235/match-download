@@ -2,7 +2,7 @@
   "name": "wlzj-match-downloader",
   "productName": "位来足迹-校赛作品下载器",
   "private": true,
-  "version": "1.0.0",,,
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

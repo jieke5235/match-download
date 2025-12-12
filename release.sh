@@ -82,9 +82,9 @@ fi
 
 # 更新 package.json
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION_NUMBER\",/" package.json
+    sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION_NUMBER\"/" package.json
 else
-    sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION_NUMBER\",/" package.json
+    sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION_NUMBER\"/" package.json
 fi
 
 print_success "版本号已更新"
