@@ -15,30 +15,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
-            target: 'aarch64-apple-darwin'
-            name: 'macOS ARM64'
-          - platform: 'macos-latest'
-            target: 'x86_64-apple-darwin'
-            name: 'macOS x64'
-          - platform: 'ubuntu-22.04'
-            target: 'x86_64-unknown-linux-gnu'
-            name: 'Linux x64'
-          - platform: 'windows-latest'
-            target: 'x86_64-pc-windows-msvc'
-            name: 'Windows x64'
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS ARM64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: Linux x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows x64
 
     runs-on: ${{ matrix.platform }}
     name: Build ${{ matrix.name }}
 
     steps:
+      # -------------------------
+      # 基础环境
+      # -------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install pnpm
         uses: pnpm/action-setup@v2
@@ -50,16 +53,35 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install dependencies (Ubuntu only)
+      # -------------------------
+      # Linux 依赖
+      # -------------------------
+      - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev \
-            build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
 
+      # -------------------------
+      # 前端依赖
+      # -------------------------
       - name: Install frontend dependencies
         run: pnpm install
 
+      # -------------------------
+      # 🚨 关键：安装 tauri-cli（否则没有 cargo tauri）
+      # -------------------------
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
+      # -------------------------
+      # 构建 + 发布 Release
+      # -------------------------
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -74,19 +96,26 @@ jobs:
           args: --target ${{ matrix.target }}
 
       # -------------------------
-      # 🔥 此步骤就是生成 .sig 的关键
+      # 🔐 生成 Updater .sig（macOS + Windows）
       # -------------------------
       - name: Sign updater artifacts
         if: matrix.platform == 'macos-latest' || matrix.platform == 'windows-latest'
         shell: bash
         run: |
-          echo "Searching for built artifacts…"
+          echo "🔍 Searching build artifacts..."
 
           ARTIFACT_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          APP_PATH=$(find "$ARTIFACT_DIR" -type f \( -name "*.app" -o -name "*.exe" -o -name "*.msi" \) | head -n 1)
+          APP_PATH=$(find "$ARTIFACT_DIR" -type f \
+            \( -name "*.app" -o -name "*.exe" -o -name "*.msi" \) | head -n 1)
 
-          echo "Found: $APP_PATH"
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No artifact found to sign"
+            exit 1
+          fi
+
+          echo "📦 Found: $APP_PATH"
+          echo "🔏 Signing updater artifact..."
 
           cargo tauri signer sign \
             --private-key "${{ secrets.TAURI_PRIVATE_KEY }}" \
@@ -94,8 +123,11 @@ jobs:
             --ci \
             "$APP_PATH"
 
-          echo "✔ Signature generated."
+          echo "✅ .sig generated"
 
+      # -------------------------
+      # 上传构建产物（可选，但推荐）
+      # -------------------------
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
