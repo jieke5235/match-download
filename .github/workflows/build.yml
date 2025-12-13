@@ -98,32 +98,49 @@ jobs:
       # -------------------------
       # 🔐 生成 Updater .sig（macOS + Windows）
       # -------------------------
-      - name: Sign updater artifacts
-        if: matrix.platform == 'macos-latest' || matrix.platform == 'windows-latest'
+      - name: Sign updater artifacts (FULL)
         shell: bash
         run: |
+          set -e
+
           echo "🔍 Searching build artifacts..."
 
-          ARTIFACT_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          TARGET="${{ matrix.target }}"
+          BASE_DIR="src-tauri/target/${TARGET}/release/bundle"
 
-          APP_PATH=$(find "$ARTIFACT_DIR" -type f \
-            \( -name "*.app" -o -name "*.exe" -o -name "*.msi" \) | head -n 1)
+          echo "📂 Base dir: $BASE_DIR"
 
-          if [ -z "$APP_PATH" ]; then
+          if [ ! -d "$BASE_DIR" ]; then
+            echo "❌ Bundle directory not found"
+            exit 1
+          fi
+
+          echo "📄 Listing files:"
+          find "$BASE_DIR" -type f
+
+          INSTALLER=$(find "$BASE_DIR" -type f \
+            \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" \) \
+            | head -n 1)
+
+          if [ -z "$INSTALLER" ]; then
             echo "❌ No artifact found to sign"
             exit 1
           fi
 
-          echo "📦 Found: $APP_PATH"
-          echo "🔏 Signing updater artifact..."
+          echo "📦 Found installer:"
+          echo "$INSTALLER"
+
+          echo "🔏 Signing installer..."
 
           cargo tauri signer sign \
             --private-key "${{ secrets.TAURI_PRIVATE_KEY }}" \
             --password "${{ secrets.TAURI_KEY_PASSWORD }}" \
             --ci \
-            "$APP_PATH"
+            "$INSTALLER"
 
-          echo "✅ .sig generated"
+          echo "✅ Signature generated successfully"
+
+        
 
       # -------------------------
       # 上传构建产物（可选，但推荐）
