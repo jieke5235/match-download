@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 🔐 Tauri 签名密钥快速设置脚本
+# 🔐 Tauri 签名密钥信息
 
 echo "================================================"
 echo "🔐 Tauri 签名密钥信息"
@@ -20,7 +20,7 @@ echo ""
 echo "-------------------------------------------"
 echo "Secret 2: TAURI_KEY_PASSWORD"
 echo "-------------------------------------------"
-echo "（留空 - 使用空密码）"
+echo "121212"
 echo ""
 echo ""
 
@@ -36,9 +36,8 @@ echo "📝 下一步操作："
 echo "================================================"
 echo "1. 访问: https://github.com/你的用户名/match-download/settings/secrets/actions"
 echo "2. 更新 TAURI_PRIVATE_KEY（复制上面的私钥内容）"
-echo "3. 更新 TAURI_KEY_PASSWORD（留空）"
+echo "3. 更新 TAURI_KEY_PASSWORD 为: 121212"
 echo "4. 提交并推送代码"
 echo "5. 创建新 tag 触发构建: git tag v1.0.1 && git push origin v1.0.1"
 echo ""
-echo "详细说明请查看: GITHUB_SECRETS_SETUP.md"
 echo "================================================"
