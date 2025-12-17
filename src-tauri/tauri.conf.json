@@ -57,7 +57,7 @@
         "https://job3.posedu.cn/api/updater/check/target/{{target}}/current_version/{{current_version}}"
       ],
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2NkY1REVGQThDNTJBQTIKUldTaUtzV283MTF2bG4wQ003NXFTVk9DWDJSTzJsN0VNcm94ZmJpMjhDNUtzTkdmc1hmanRhS2cK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2MTI2N0ZENEFEMTcyRUQKUldUdGN0RksvV2NTMWw1YTg1VENKenZETHl4OTByb2U5RFk4M3d6bXF3QWl4bkNCZXBMMHZDY0kK"
     }
   }
 }

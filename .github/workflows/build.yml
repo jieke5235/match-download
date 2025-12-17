@@ -111,11 +111,24 @@ jobs:
             else
               echo "🔏 Generating signature..."
               
-              # 生成签名
-              cargo tauri signer sign \
-                "${INSTALLER}" \
-                --private-key "${{ secrets.TAURI_PRIVATE_KEY }}" \
-                --password "${{ secrets.TAURI_KEY_PASSWORD }}"
+              # 生成签名 - 根据密码是否为空决定是否传递 --password 参数
+              PRIVATE_KEY="${{ secrets.TAURI_PRIVATE_KEY }}"
+              PASSWORD="${{ secrets.TAURI_KEY_PASSWORD }}"
+              
+              if [ -z "$PASSWORD" ]; then
+                # 密码为空，不传递 --password 参数
+                echo "📝 Using key without password"
+                cargo tauri signer sign \
+                  "$INSTALLER" \
+                  --private-key "$PRIVATE_KEY"
+              else
+                # 密码不为空，传递 --password 参数
+                echo "📝 Using key with password"
+                cargo tauri signer sign \
+                  "$INSTALLER" \
+                  --private-key "$PRIVATE_KEY" \
+                  --password "$PASSWORD"
+              fi
               
               if [ -f "${INSTALLER}.sig" ]; then
                 echo "✅ Signature created: ${INSTALLER}.sig"
