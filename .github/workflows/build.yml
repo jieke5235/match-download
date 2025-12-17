@@ -73,6 +73,64 @@ jobs:
           args: --target ${{ matrix.target }}
 
       # -------------------------
+      # 🔐 生成 .sig 签名文件（用于自动更新）
+      # -------------------------
+      - name: Install Tauri CLI for signing
+        if: matrix.platform != 'ubuntu-22.04'
+        run: cargo install tauri-cli --version "^2.0.0"
+
+      - name: Generate .sig signature files
+        if: matrix.platform != 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -e
+          
+          echo "🔍 Looking for installer files..."
+          
+          TARGET="${{ matrix.target }}"
+          BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
+          
+          # 根据平台查找对应的安装包
+          if [[ "${{ matrix.platform }}" == "macos-latest" ]]; then
+            PATTERN="*.dmg"
+          elif [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
+            PATTERN="*.msi"
+          fi
+          
+          echo "📂 Searching in: $BUNDLE_DIR"
+          echo "🔎 Pattern: $PATTERN"
+          
+          # 查找所有匹配的文件
+          find "$BUNDLE_DIR" -type f -name "$PATTERN" | while read -r INSTALLER; do
+            echo ""
+            echo "📦 Found: $INSTALLER"
+            
+            # 检查是否已经有 .sig 文件
+            if [ -f "${INSTALLER}.sig" ]; then
+              echo "✅ Signature already exists: ${INSTALLER}.sig"
+            else
+              echo "🔏 Generating signature..."
+              
+              # 生成签名
+              cargo tauri signer sign \
+                "${INSTALLER}" \
+                --private-key "${{ secrets.TAURI_PRIVATE_KEY }}" \
+                --password "${{ secrets.TAURI_KEY_PASSWORD }}"
+              
+              if [ -f "${INSTALLER}.sig" ]; then
+                echo "✅ Signature created: ${INSTALLER}.sig"
+              else
+                echo "❌ Failed to create signature"
+                exit 1
+              fi
+            fi
+          done
+          
+          echo ""
+          echo "📋 All files in bundle directory:"
+          find "$BUNDLE_DIR" -type f
+
+      # -------------------------
       # 上传构建产物（可选，但推荐）
       # -------------------------
       - name: Upload artifacts
