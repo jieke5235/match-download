@@ -21,9 +21,6 @@ jobs:
           - platform: macos-latest
             target: x86_64-apple-darwin
             name: macOS x64
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            name: Linux x64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             name: Windows x64
@@ -54,30 +51,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       # -------------------------
-      # Linux 依赖
-      # -------------------------
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
-      # -------------------------
       # 前端依赖
       # -------------------------
       - name: Install frontend dependencies
         run: pnpm install
-
-      # -------------------------
-      # 🚨 关键：安装 tauri-cli（否则没有 cargo tauri）
-      # -------------------------
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli
 
       # -------------------------
       # 构建 + 发布 Release
@@ -94,53 +71,6 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
-
-      # -------------------------
-      # 🔐 生成 Updater .sig（macOS + Windows）
-      # -------------------------
-      - name: Sign updater artifacts (FULL)
-        shell: bash
-        run: |
-          set -e
-
-          echo "🔍 Searching build artifacts..."
-
-          TARGET="${{ matrix.target }}"
-          BASE_DIR="src-tauri/target/${TARGET}/release/bundle"
-
-          echo "📂 Base dir: $BASE_DIR"
-
-          if [ ! -d "$BASE_DIR" ]; then
-            echo "❌ Bundle directory not found"
-            exit 1
-          fi
-
-          echo "📄 Listing files:"
-          find "$BASE_DIR" -type f
-
-          INSTALLER=$(find "$BASE_DIR" -type f \
-            \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" \) \
-            | head -n 1)
-
-          if [ -z "$INSTALLER" ]; then
-            echo "❌ No artifact found to sign"
-            exit 1
-          fi
-
-          echo "📦 Found installer:"
-          echo "$INSTALLER"
-
-          echo "🔏 Signing installer..."
-
-          cargo tauri signer sign \
-            --private-key "${{ secrets.TAURI_PRIVATE_KEY }}" \
-            --password "${{ secrets.TAURI_KEY_PASSWORD }}" \
-            --ci \
-            "$INSTALLER"
-
-          echo "✅ Signature generated successfully"
-
-        
 
       # -------------------------
       # 上传构建产物（可选，但推荐）
