@@ -613,7 +613,7 @@ pub async fn download_works(
                 // 单个文件下载（无 batch_id），保持原有逻辑
                 let app_handle = app_clone.clone();
                 let client = create_http_client();
-                let (tx, rx) = mpsc::channel(1); // dummy channel
+                let (_tx, rx) = mpsc::channel(1); // dummy channel
 
                 tokio::spawn(async move {
                     let _permit = permit;
@@ -684,7 +684,7 @@ async fn download_file_simple_with_control(
     attempt: u32,
     control_rx: &mut mpsc::Receiver<BatchControl>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::Write;
 
     let path = std::path::Path::new(&item.save_path).join(&item.filename);
 
@@ -697,11 +697,9 @@ async fn download_file_simple_with_control(
 
     // 检查已存在文件的大小（断点续传）
     let mut downloaded_size = 0u64;
-    let mut file_exists = false;
     if path.exists() {
         if let Ok(metadata) = std::fs::metadata(&path) {
             downloaded_size = metadata.len();
-            file_exists = true;
         }
     }
 
