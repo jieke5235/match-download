@@ -84,6 +84,9 @@ jobs:
       - name: Generate .sig signature files
         if: matrix.platform != 'ubuntu-22.04'
         shell: bash
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         run: |
           set -e
           
@@ -136,25 +139,27 @@ jobs:
               echo "🔏 Generating signature..."
               
               # 生成签名 - 根据密码是否为空决定是否传递 --password 参数
-              PRIVATE_KEY="${{ secrets.TAURI_PRIVATE_KEY }}"
-              PASSWORD="${{ secrets.TAURI_KEY_PASSWORD }}"
+              # 生成签名
+              # 环境变量 TAURI_PRIVATE_KEY 和 TAURI_KEY_PASSWORD 已在 step 级别定义
               
-              if [ -z "$PASSWORD" ]; then
-                # 密码为空，不传递 --password 参数
+              # 使用环境变量传递敏感信息，避免 Shell 插值导致的格式问题
+              # 将私钥和密码导出为环境变量，供 cargo tauri 使用 (如果它支持自动读取)
+              # 或者在命令行显式引用环境变量
+              
+              echo "🔑 DEBUG: Password length: ${#TAURI_KEY_PASSWORD}"
+              echo "🔑 DEBUG: Password value: $TAURI_KEY_PASSWORD"
+              
+              if [ -z "$TAURI_KEY_PASSWORD" ]; then
                 echo "📝 Using key without password"
                 cargo tauri signer sign \
                   "$INSTALLER" \
-                  --private-key "$PRIVATE_KEY"
+                  --private-key "$TAURI_PRIVATE_KEY"
               else
-                # 密码不为空，传递 --password 参数
                 echo "📝 Using key with password"
-                # 注意：这里使用 --password 标志并将密码作为参数传递
-                # 如果 tauri-cli 版本支持环境变量 TAURI_SIGNING_PRIVATE_KEY_PASSWORD，也可以直接依赖它，
-                # 但显式传递通常更可靠
                 cargo tauri signer sign \
                   "$INSTALLER" \
-                  --private-key "$PRIVATE_KEY" \
-                  --password "$PASSWORD"
+                  --private-key "$TAURI_PRIVATE_KEY" \
+                  --password "$TAURI_KEY_PASSWORD"
               fi
               
               if [ -f "${INSTALLER}.sig" ]; then
