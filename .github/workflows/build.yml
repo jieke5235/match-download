@@ -145,9 +145,90 @@ jobs:
             fi
           done
           
+
           echo ""
           echo "📋 All files in bundle directory:"
           find "$BUNDLE_DIR" -type f
+
+      # -------------------------
+      # 🚀 上传到更新服务器 (CI/CD 自动化)
+      # -------------------------
+      - name: Upload to update server
+        if: matrix.platform != 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -e
+          echo "🚀 Preparing to upload to update server..."
+
+          # 1. 确定目标平台名称 (对应 PHP 接口要求)
+          # aarch64-apple-darwin -> darwin-aarch64
+          # x86_64-apple-darwin -> darwin-x86_64
+          # x86_64-pc-windows-msvc -> windows-x86_64
+          
+          RAW_TARGET="${{ matrix.target }}"
+          if [[ "$RAW_TARGET" == "aarch64-apple-darwin" ]]; then
+            PLATFORM="darwin-aarch64"
+          elif [[ "$RAW_TARGET" == "x86_64-apple-darwin" ]]; then
+            PLATFORM="darwin-x86_64"
+          elif [[ "$RAW_TARGET" == "x86_64-pc-windows-msvc" ]]; then
+            PLATFORM="windows-x86_64"
+          else
+            echo "⚠️ Unknown target: $RAW_TARGET"
+            PLATFORM="$RAW_TARGET"
+          fi
+          
+          echo "🏷️ Platform: $PLATFORM"
+          echo "📦 Version: ${{ github.ref_name }}"
+
+          # 2. 找到要上传的文件和签名
+          BUNDLE_DIR="src-tauri/target/$RAW_TARGET/release/bundle"
+          
+          if [[ "$PLATFORM" == darwin* ]]; then
+            FILE_Path=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" | head -n 1)
+          else
+            FILE_Path=$(find "$BUNDLE_DIR" -name "*.zip" | head -n 1)
+          fi
+          
+          if [ -z "$FILE_Path" ]; then
+            echo "❌ No suitable file found to upload!"
+            exit 1
+          fi
+          
+          SIG_PATH="${FILE_Path}.sig"
+          if [ ! -f "$SIG_PATH" ]; then
+             echo "❌ Signature file not found: $SIG_PATH"
+             exit 1
+          fi
+          
+          SIGNATURE=$(cat "$SIG_PATH")
+          echo "📄 File: $FILE_Path"
+          echo "🔏 Signature length: ${#SIGNATURE}"
+          
+          # 3. 调用 API 上传
+          # 注意：这里的 Token 是硬编码的，建议在 Repository Secrets 中配置并使用 ${{ secrets.CI_TOKEN }}
+          API_URL="https://job3.posedu.cn/api/updater/upload_package"
+          TOKEN="wlzj_ci_secret_888888" 
+          
+          echo "📡 Uploading to $API_URL ..."
+          
+          STATUS_CODE=$(curl -s -o response.json -w "%{http_code}" -X POST "$API_URL" \
+            -F "token=$TOKEN" \
+            -F "version=${{ github.ref_name }}" \
+            -F "platform=$PLATFORM" \
+            -F "signature=$SIGNATURE" \
+            -F "notes=Released via GitHub Actions" \
+            -F "file=@$FILE_Path")
+            
+          echo "📡 Response code: $STATUS_CODE"
+          cat response.json
+          
+          if [ "$STATUS_CODE" -eq 200 ]; then
+            echo "✅ Upload and publish success!"
+          else
+            echo "❌ Upload failed!"
+            exit 1
+          fi
+
 
       # -------------------------
       # 上传构建产物（可选，但推荐）
