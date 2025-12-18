@@ -96,8 +96,29 @@ jobs:
           if [[ "${{ matrix.platform }}" == "macos-latest" ]]; then
             PATTERN="*.app.tar.gz"
           elif [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
-            # Windows 通常使用 .msi.zip 或 .nsis.zip
+            # Windows: 尝试查找 .zip
+            # 如果找不到 .zip，我们将在下面手动压缩 .msi
             PATTERN="*.zip"
+            
+            # 检查是否有 .zip，如果没有则查找 .msi 并压缩
+            if [ -z "$(find "$BUNDLE_DIR" -type f -name "*.zip")" ]; then
+                echo "⚠️ No .zip found for Windows, trying to compress .msi..."
+                MSI_FILE=$(find "$BUNDLE_DIR" -type f -name "*.msi" | head -n 1)
+                if [ -n "$MSI_FILE" ]; then
+                    echo "📦 Compressing $MSI_FILE to zip..."
+                    # 使用 PowerShell 压缩 (Windows 环境) 或者 tar
+                    # 由于是在 git bash 中运行，可以使用 tar
+                    # 注意：Tauri updater 期望 zip 内直接包含 msi，还是目录结构？通常是直接包含。
+                    # 为了简单，我们生成与 msi 同名的 zip
+                    ZIP_FILE="${MSI_FILE}.zip"
+                    # 使用 7z (Windows runner 通常预装) 或者 PowerShell
+                    # 这里尝试用 powershell Compress-Archive
+                    powershell -Command "Compress-Archive -Path '${MSI_FILE}' -DestinationPath '${ZIP_FILE}'"
+                    echo "✅ Created $ZIP_FILE"
+                else
+                    echo "❌ No .msi found either!"
+                fi
+            fi
           fi
           
           echo "📂 Searching in: $BUNDLE_DIR"
