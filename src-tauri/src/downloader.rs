@@ -58,6 +58,10 @@ impl DownloadManager {
         self.concurrency
     }
 
+    pub fn get_semaphore(&self) -> Arc<Semaphore> {
+        self.semaphore.clone()
+    }
+
     pub async fn get_state(&self) -> DownloadManagerState {
         self.state.lock().await.clone()
     }

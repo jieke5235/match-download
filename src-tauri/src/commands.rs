@@ -1,14 +1,43 @@
-use crate::downloader::{DownloadItem, DownloadManager};
+use crate::downloader::{DownloadItem, DownloadManager, DownloadProgress};
 use axum::{extract::Query, response::Html, Router};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tauri::AppHandle;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 // OAuth callback state
 static OAUTH_STATE: once_cell::sync::Lazy<Arc<Mutex<Option<OauthResult>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+
+#[derive(Clone, Debug, PartialEq)]
+enum BatchState {
+    Running,
+    Paused,
+}
+
+// 批次任务管理器
+struct BatchControlInfo {
+    senders: Vec<mpsc::Sender<BatchControl>>,
+    items: Vec<DownloadItem>, // 保存下载项以便恢复
+    state: BatchState,        // 批次状态
+}
+
+type BatchTasksMap = Arc<Mutex<HashMap<String, BatchControlInfo>>>;
+
+static BATCH_TASKS: once_cell::sync::Lazy<BatchTasksMap> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+#[derive(Clone, Debug)]
+enum BatchControl {
+    Stop,
+    Pause, // 新增暂停信号
+}
+
+// 无效代码块已删除
 
 #[derive(Debug, Clone)]
 struct OauthResult {
@@ -462,7 +491,7 @@ pub async fn download_works(
     batch_id: Option<String>,
     save_path: String,
 ) -> Result<(), String> {
-    let manager = state.lock().await;
+    let mut download_items = Vec::new();
 
     for work in works {
         // 构建目录路径: 比赛名称/赛段名称/学院/专业/班级/学生姓名_学号
@@ -493,26 +522,342 @@ pub async fn download_works(
             let id = uuid::Uuid::new_v4().to_string();
             let filename = sanitize_filename(&file.user_content.name);
 
-            manager
-                .add_task(DownloadItem {
-                    id,
-                    batch_id: batch_id.clone(),
-                    url: file.user_content.url,
-                    filename,
-                    save_path: work_save_path.clone(),
-                })
-                .await;
+            download_items.push(DownloadItem {
+                id,
+                batch_id: batch_id.clone(),
+                url: file.user_content.url,
+                filename,
+                save_path: work_save_path.clone(),
+            });
         }
     }
 
-    let manager_clone = state.inner().clone();
+    // 关键修复：立即注册批次，确保 Stop/Pause 按钮立即可用
+    if let Some(ref bid) = batch_id {
+        println!(
+            "📦 Registering batch: {} (items: {})",
+            bid,
+            download_items.len()
+        );
+        BATCH_TASKS.lock().await.insert(
+            bid.clone(),
+            BatchControlInfo {
+                senders: Vec::new(),
+                items: download_items.clone(),
+                state: BatchState::Running,
+            },
+        );
+    }
+
+    let manager = state.lock().await;
+    let semaphore = manager.get_semaphore();
     let app_clone = app.clone();
+    let batch_id_clone = batch_id.clone();
+
+    // 关键修复：将整个调度逻辑放入后台任务，避免阻塞主线程
     tokio::spawn(async move {
-        let mgr = manager_clone.lock().await;
-        mgr.start_downloads(&app_clone);
+        let mut control_senders = Vec::new();
+
+        for item in download_items {
+            // 检查批次状态：如果已暂停或删除，停止生成新任务
+            if let Some(ref bid) = batch_id_clone {
+                let tasks = BATCH_TASKS.lock().await;
+                if let Some(info) = tasks.get(bid) {
+                    if info.state == BatchState::Paused {
+                        println!("⏸️ Batch is paused, stopping dispatch loop: {}", bid);
+                        break;
+                    }
+                } else {
+                    // 批次已删除
+                    break;
+                }
+            }
+
+            // 在这里等待信号量，不会阻塞主线程 UI
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break, // 信号量关闭
+            };
+
+            // 再次检查状态（因为等待信号量可能花了很久）
+            if let Some(ref bid) = batch_id_clone {
+                let mut tasks = BATCH_TASKS.lock().await;
+                if let Some(info) = tasks.get_mut(bid) {
+                    if info.state == BatchState::Paused {
+                        // 释放信号量并退出
+                        drop(permit);
+                        break;
+                    }
+
+                    let app_handle = app_clone.clone();
+                    let client = create_http_client();
+                    let (tx, rx) = mpsc::channel(1);
+                    control_senders.push(tx);
+
+                    // 添加到 senders
+                    info.senders.push(control_senders.last().unwrap().clone());
+
+                    tokio::spawn(async move {
+                        let _permit = permit; // 任务结束自动释放
+                        if let Err(e) =
+                            download_file_with_control(&client, &app_handle, item, rx).await
+                        {
+                            eprintln!("Download failed: {}", e);
+                        }
+                    });
+                } else {
+                    drop(permit);
+                    break;
+                }
+            } else {
+                // 单个文件下载（无 batch_id），保持原有逻辑
+                let app_handle = app_clone.clone();
+                let client = create_http_client();
+                let (tx, rx) = mpsc::channel(1); // dummy channel
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(e) = download_file_with_control(&client, &app_handle, item, rx).await
+                    {
+                        eprintln!("Download failed: {}", e);
+                    }
+                });
+            }
+        }
     });
 
     Ok(())
+}
+
+// 带控制通道的下载函数
+async fn download_file_with_control(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    item: DownloadItem,
+    mut control_rx: mpsc::Receiver<BatchControl>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const MAX_RETRIES: u32 = 3;
+    let mut last_error = None;
+
+    for attempt in 1..=MAX_RETRIES {
+        // 检查是否收到停止信号
+        if let Ok(BatchControl::Stop) = control_rx.try_recv() {
+            println!("Download stopped for: {}", item.filename);
+            app.emit(
+                "download://progress",
+                DownloadProgress {
+                    id: item.id.clone(),
+                    batch_id: item.batch_id.clone(),
+                    total: 0,
+                    current: 0,
+                    status: "stopped".to_string(),
+                },
+            )?;
+            return Ok(());
+        }
+
+        match download_file_simple_with_control(client, app, &item, attempt, &mut control_rx).await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!(
+                    "Download attempt {}/{} failed for {}: {}",
+                    attempt, MAX_RETRIES, item.filename, e
+                );
+                last_error = Some(e);
+
+                if attempt < MAX_RETRIES {
+                    let wait_time = Duration::from_secs(2u64.pow(attempt - 1));
+                    tokio::time::sleep(wait_time).await;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+async fn download_file_simple_with_control(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    item: &DownloadItem,
+    attempt: u32,
+    control_rx: &mut mpsc::Receiver<BatchControl>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let path = std::path::Path::new(&item.save_path).join(&item.filename);
+
+    println!("Downloading: {} (attempt {})", item.filename, attempt);
+
+    // 创建目录
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // 检查已存在文件的大小（断点续传）
+    let mut downloaded_size = 0u64;
+    let mut file_exists = false;
+    if path.exists() {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            downloaded_size = metadata.len();
+            file_exists = true;
+        }
+    }
+
+    // 发送请求，带上前 Range
+    let mut req_builder = client.get(&item.url);
+    if downloaded_size > 0 {
+        println!(
+            "Resuming download for {}: bytes={}-",
+            item.filename, downloaded_size
+        );
+        req_builder = req_builder.header("Range", format!("bytes={}-", downloaded_size));
+    }
+
+    let res = req_builder
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+
+    // 处理 416 Range Not Satisfiable (说明文件可能已下载完)
+    if res.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        // 假设文件已完整，标记为完成
+        // 更好的做法是检查 Content-Length，但 416 通常意味着 offset >= total
+        app.emit(
+            "download://progress",
+            DownloadProgress {
+                id: item.id.clone(),
+                batch_id: item.batch_id.clone(),
+                total: downloaded_size,
+                current: downloaded_size,
+                status: "completed".to_string(),
+            },
+        )?;
+        return Ok(());
+    }
+
+    if !res.status().is_success() {
+        return Err(format!("HTTP error: {}", res.status()).into());
+    }
+
+    let content_length = res.content_length().unwrap_or(0);
+    let total_size = downloaded_size + content_length;
+
+    // 通知开始
+    app.emit(
+        "download://progress",
+        DownloadProgress {
+            id: item.id.clone(),
+            batch_id: item.batch_id.clone(),
+            total: total_size,
+            current: downloaded_size,
+            status: "downloading".to_string(),
+        },
+    )?;
+
+    // 打开文件：如果已存在则追加，否则创建
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(true)
+        .open(&path)?;
+
+    let mut writer = std::io::BufWriter::with_capacity(8 * 1024 * 1024, file);
+    let mut current = downloaded_size;
+    let mut last_progress_update = downloaded_size;
+    const PROGRESS_UPDATE_THRESHOLD: u64 = 1024 * 1024;
+
+    let mut stream = res.bytes_stream();
+    use futures::StreamExt;
+
+    while let Some(chunk_result) = stream.next().await {
+        // 检查控制信号
+        if let Ok(control) = control_rx.try_recv() {
+            match control {
+                BatchControl::Stop => {
+                    println!("Download stopped for: {}", item.filename);
+                    app.emit(
+                        "download://progress",
+                        DownloadProgress {
+                            id: item.id.clone(),
+                            batch_id: item.batch_id.clone(),
+                            total: total_size,
+                            current,
+                            status: "stopped".to_string(),
+                        },
+                    )?;
+                    return Ok(());
+                }
+                BatchControl::Pause => {
+                    println!("Download paused for: {}", item.filename);
+                    app.emit(
+                        "download://progress",
+                        DownloadProgress {
+                            id: item.id.clone(),
+                            batch_id: item.batch_id.clone(),
+                            total: total_size,
+                            current,
+                            status: "paused".to_string(),
+                        },
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+
+        let chunk = chunk_result.map_err(|e| format!("Failed to read chunk: {}", e))?;
+
+        writer
+            .write_all(&chunk)
+            .map_err(|e| format!("Failed to write to file: {}", e))?;
+        current += chunk.len() as u64;
+
+        if current - last_progress_update >= PROGRESS_UPDATE_THRESHOLD || current == total_size {
+            app.emit(
+                "download://progress",
+                DownloadProgress {
+                    id: item.id.clone(),
+                    batch_id: item.batch_id.clone(),
+                    total: total_size,
+                    current,
+                    status: "downloading".to_string(),
+                },
+            )?;
+            last_progress_update = current;
+        }
+    }
+
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush file: {}", e))?;
+
+    println!("Successfully downloaded: {}", item.filename);
+
+    app.emit(
+        "download://progress",
+        DownloadProgress {
+            id: item.id.clone(),
+            batch_id: item.batch_id.clone(),
+            total: total_size,
+            current: total_size,
+            status: "completed".to_string(),
+        },
+    )?;
+
+    Ok(())
+}
+
+fn create_http_client() -> reqwest::Client {
+    use std::time::Duration;
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(20)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .unwrap()
 }
 
 // 辅助函数：清理文件名，移除不安全字符
@@ -568,6 +913,192 @@ pub async fn stop_downloads(
     Ok(())
 }
 
+// 停止单个批次
+#[tauri::command]
+pub async fn stop_batch(batch_id: String) -> Result<(), String> {
+    println!("🛑 Attempting to stop batch: {}", batch_id);
+
+    let mut tasks = BATCH_TASKS.lock().await;
+
+    if let Some(info) = tasks.remove(&batch_id) {
+        println!(
+            "🛑 Stopping batch: {} (tasks: {})",
+            batch_id,
+            info.senders.len()
+        );
+
+        // 向所有任务发送停止信号
+        for sender in info.senders {
+            let _ = sender.send(BatchControl::Stop).await;
+        }
+
+        println!("✅ Batch stopped successfully: {}", batch_id);
+        Ok(())
+    } else {
+        let err_msg = format!("Batch {} not found in memory.", batch_id);
+        eprintln!("❌ {}", err_msg);
+        Err(err_msg)
+    }
+}
+
+// 暂停单个批次
+#[tauri::command]
+pub async fn pause_batch(batch_id: String) -> Result<(), String> {
+    println!("⏸️ Attempting to pause batch: {}", batch_id);
+
+    let mut tasks = BATCH_TASKS.lock().await;
+
+    // 注意：暂停时不从 map 中移除，因为我们需要保留 items 信息以便恢复
+    if let Some(info) = tasks.get_mut(&batch_id) {
+        println!(
+            "⏸️ Pausing batch: {} (tasks: {})",
+            batch_id,
+            info.senders.len()
+        );
+
+        // 设置状态为 Paused，通知后台调度循环停止
+        info.state = BatchState::Paused;
+
+        // 向所有任务发送停止信号（暂停本质上是停止连接，状态标记为 paused）
+        for sender in &info.senders {
+            let _ = sender.send(BatchControl::Pause).await;
+        }
+
+        // 清空 senders，因为旧的任务线程会退出
+        info.senders.clear();
+
+        Ok(())
+    } else {
+        Err(format!("Batch {} not found", batch_id))
+    }
+}
+
+// 恢复单个批次
+#[tauri::command]
+pub async fn resume_batch(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<Mutex<DownloadManager>>>,
+    batch_id: String,
+) -> Result<(), String> {
+    println!("▶️ Attempting to resume batch: {}", batch_id);
+
+    // 获取之前的下载项
+    let items_to_resume = {
+        let tasks = BATCH_TASKS.lock().await;
+        if let Some(info) = tasks.get(&batch_id) {
+            info.items.clone()
+        } else {
+            return Err(format!("Batch {} not found in memory history", batch_id));
+        }
+    };
+
+    println!(
+        "▶️ Resuming batch: {} (total items: {})",
+        batch_id,
+        items_to_resume.len()
+    );
+
+    // 重置状态为 Running
+    {
+        let mut tasks = BATCH_TASKS.lock().await;
+        if let Some(info) = tasks.get_mut(&batch_id) {
+            println!("🔄 Resetting batch {} state to Running", batch_id);
+            info.state = BatchState::Running;
+        } else {
+            println!("❌ Resume failed: Batch {} not found", batch_id);
+            return Err(format!("Batch {} not found", batch_id));
+        }
+    }
+
+    let manager = state.lock().await;
+    let semaphore = manager.get_semaphore();
+    println!(
+        "🚦 Resume process starting. Semaphore permits available: {}",
+        semaphore.available_permits()
+    );
+
+    let app_clone = app.clone();
+    let batch_id_clone = batch_id.clone();
+
+    // 启动新的调度任务
+    tokio::spawn(async move {
+        println!("🚀 Dispatch loop started for batch: {}", batch_id_clone);
+        let mut control_senders = Vec::new();
+
+        for (index, item) in items_to_resume.iter().enumerate() {
+            // 检查批次状态：如果已暂停或删除，停止生成新任务
+            {
+                let tasks = BATCH_TASKS.lock().await;
+                if let Some(info) = tasks.get(&batch_id_clone) {
+                    if info.state == BatchState::Paused {
+                        println!(
+                            "⏸️ Resumed batch paused again, stopping dispatch: {}",
+                            batch_id_clone
+                        );
+                        break;
+                    }
+                } else {
+                    println!("❌ Batch deleted during resume dispatch");
+                    break;
+                }
+            }
+
+            println!(
+                "⏳ Waiting for semaphore (item {}/{})",
+                index + 1,
+                items_to_resume.len()
+            );
+            // 获取信号量
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("❌ Semaphore closed: {}", e);
+                    break;
+                }
+            };
+            println!(
+                "✅ Semaphore acquired (item {}/{})",
+                index + 1,
+                items_to_resume.len()
+            );
+
+            // 再次检查状态
+            {
+                let mut tasks = BATCH_TASKS.lock().await;
+                if let Some(info) = tasks.get_mut(&batch_id_clone) {
+                    if info.state == BatchState::Paused {
+                        println!("⏸️ Batch paused after semaphore acquire, dropping permit");
+                        drop(permit);
+                        break;
+                    }
+
+                    let app_handle = app_clone.clone();
+                    let client = create_http_client();
+                    let (tx, rx) = mpsc::channel(1);
+                    control_senders.push(tx);
+                    info.senders.push(control_senders.last().unwrap().clone());
+
+                    let item_clone = item.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        if let Err(e) =
+                            download_file_with_control(&client, &app_handle, item_clone, rx).await
+                        {
+                            eprintln!("Resume download failed: {}", e);
+                        }
+                    });
+                } else {
+                    drop(permit);
+                    break;
+                }
+            }
+        }
+        println!("🏁 Dispatch loop finished for batch: {}", batch_id_clone);
+    });
+
+    Ok(())
+}
+
 // 获取下载管理器状态
 #[tauri::command]
 pub async fn get_download_state(
@@ -585,4 +1116,34 @@ pub async fn get_current_concurrency(
 ) -> Result<usize, String> {
     let manager = state.lock().await;
     Ok(manager.get_concurrency())
+}
+
+// 打开文件夹
+#[tauri::command]
+pub async fn open_folder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
 }

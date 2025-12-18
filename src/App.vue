@@ -10,7 +10,7 @@ const isLoggedIn = ref(false);
 const accessToken = ref('');
 const domain = ref('');
 const userInfo = ref(null);
-const batches = ref([]); // Array of { id, title, totalBytes, downloadedBytes, status, totalFiles, completedFiles }
+const batches = ref([]); // Array of { id, title, totalBytes, downloadedBytes, status, totalFiles, completedFiles, savePath, createdAt }
 
 const handleLoginSuccess = (authData) => {
   isLoggedIn.value = true;
@@ -33,6 +33,27 @@ const handleLogout = () => {
   batches.value = [];
 };
 
+// 保存批次到 localStorage
+const saveBatchesToStorage = () => {
+  try {
+    localStorage.setItem('download_batches', JSON.stringify(batches.value));
+  } catch (e) {
+    console.error('Failed to save batches to storage:', e);
+  }
+};
+
+// 从 localStorage 恢复批次
+const loadBatchesFromStorage = () => {
+  try {
+    const saved = localStorage.getItem('download_batches');
+    if (saved) {
+      batches.value = JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Failed to load batches from storage:', e);
+  }
+};
+
 // 检查是否已有登录状态
 onMounted(() => {
   const savedToken = localStorage.getItem('access_token');
@@ -46,6 +67,9 @@ onMounted(() => {
     domain.value = savedDomain;
     userInfo.value = JSON.parse(savedUserInfo);
   }
+  
+  // 恢复下载历史
+  loadBatchesFromStorage();
 });
 
 const handleStartDownload = async ({ works, batchId, savePath, title, totalFiles }) => {
@@ -59,12 +83,27 @@ const handleStartDownload = async ({ works, batchId, savePath, title, totalFiles
         status: 'downloading',
         totalFiles: totalFiles,
         completedFiles: 0,
-        subTasks: [] // Store individual file progress if needed, but we summarize for now
+        subTasks: [], // Store individual file progress if needed, but we summarize for now
+        savePath: savePath,
+        createdAt: new Date().toISOString()
     });
+    
+    // 保存到 localStorage
+    saveBatchesToStorage();
 
     await invoke('download_works', { works, batchId, savePath });
   } catch (e) {
     console.error("Failed to start download", e);
+  }
+};
+
+// 删除批次
+const handleDeleteBatch = (batchId) => {
+  const index = batches.value.findIndex(b => b.id === batchId);
+  if (index !== -1) {
+    batches.value.splice(index, 1);
+    saveBatchesToStorage();
+    console.log('✅ 批次已删除:', batchId);
   }
 };
 
@@ -99,9 +138,30 @@ onMounted(async () => {
             batch.downloadedBytes = bCurrent;
             batch.completedFiles = bCompleted;
             
-            if (bCompleted === batch.totalFiles) {
-                batch.status = 'completed';
+            // 修复：检查所有任务是否都已完成（包括 completed 和 error 状态）
+            const allTasksFinished = batch.subTasks.length === batch.totalFiles && 
+                                    batch.subTasks.every(t => t.status === 'completed' || t.status === 'error');
+            
+            // 优先处理明确的状态信号
+            if (payload.status === 'paused') {
+                batch.status = 'paused';
+            } else if (payload.status === 'stopped') {
+                batch.status = 'stopped';
+            } else if (allTasksFinished) {
+                // 如果所有文件都成功下载，状态为 completed
+                if (bCompleted === batch.totalFiles) {
+                    batch.status = 'completed';
+                } else {
+                    // 如果有失败的文件，状态为 partial（部分完成）
+                    batch.status = 'partial';
+                }
+            } else if (payload.status === 'downloading') {
+                // 只有收到下载信号时才设置为 downloading
+                batch.status = 'downloading';
             }
+            
+            // 每次更新都保存到 localStorage
+            saveBatchesToStorage();
         }
     }
   });
@@ -118,11 +178,12 @@ onMounted(async () => {
         :accessToken="accessToken"
         :domain="domain"
         :userInfo="userInfo"
+        :batches="batches"
         @start-download="handleStartDownload"
         @logout="handleLogout"
       >
         <template #downloads>
-          <DownloadPanel :batches="batches" />
+          <DownloadPanel :batches="batches" @delete-batch="handleDeleteBatch" />
         </template>
       </Dashboard>
     </transition>

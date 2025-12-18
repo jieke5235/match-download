@@ -44,8 +44,12 @@ pub fn run() {
             commands::pause_downloads,
             commands::resume_downloads,
             commands::stop_downloads,
+            commands::stop_batch,
+            commands::pause_batch,
+            commands::resume_batch,
             commands::get_download_state,
-            commands::get_current_concurrency
+            commands::get_current_concurrency,
+            commands::open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

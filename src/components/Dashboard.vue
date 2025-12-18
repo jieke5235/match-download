@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { invoke } from "@tauri-apps/api/core";
 import { open, ask, message } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
@@ -7,7 +7,8 @@ import { check } from '@tauri-apps/plugin-updater';
 const props = defineProps({
   accessToken: String,
   domain: String,
-  userInfo: Object
+  userInfo: Object,
+  batches: Array  // 接收批次数据用于判断下载状态
 });
 
 const emit = defineEmits(['start-download', 'logout']);
@@ -28,7 +29,15 @@ const systemInfo = ref({
 });
 const concurrency = ref(10);
 const downloadState = ref('Idle');
-const isDownloading = ref(false);
+// 移除全局 isDownloading，改为基于批次的状态管理
+
+// 计算属性：判断是否有正在下载的任务
+const hasActiveDownloads = computed(() => {
+  if (!props.batches || props.batches.length === 0) return false;
+  return props.batches.some(batch => 
+    batch.status === 'downloading' || batch.status === 'paused'
+  );
+});
 
 // 更新状态
 const isCheckingUpdate = ref(false);
@@ -142,8 +151,8 @@ const startDownload = () => {
   const batchId = crypto.randomUUID();
   const title = `${selectedMatch.value.title} - ${selectedStage.value.title}`;
   
-  isDownloading.value = true;
-  downloadState.value = 'Running';
+  // 移除全局 isDownloading 和 downloadState 设置
+  // 每个批次独立管理自己的状态
   
   emit('start-download', {
       works: worksToDownload,
@@ -183,7 +192,6 @@ const stopDownload = async () => {
   try {
     await invoke('stop_downloads');
     downloadState.value = 'Stopped';
-    isDownloading.value = false;
     console.log('✅ 已停止所有下载');
   } catch (error) {
     console.error('Failed to stop:', error);
@@ -304,22 +312,6 @@ const logout = async () => {
           
           <!-- 控制按钮（小巧紧凑） -->
           <div class="control-buttons-compact">
-            <!-- 下载控制按钮 -->
-            <template v-if="isDownloading">
-              <!-- 暂停/继续切换按钮 -->
-              <button v-if="downloadState === 'Running'" @click="pauseDownload" class="btn-compact btn-warning-compact">
-                ⏸️ 暂停
-              </button>
-              <button v-else-if="downloadState === 'Paused'" @click="resumeDownload" class="btn-compact btn-success-compact">
-                ▶️ 继续
-              </button>
-              
-              <!-- 停止按钮 -->
-              <button @click="stopDownload" class="btn-compact btn-danger-compact">
-                ⏹️ 停止
-              </button>
-            </template>
-            
             <!-- 检查更新按钮 - 始终显示 -->
             <button @click="checkForUpdates" :disabled="isCheckingUpdate" class="btn-compact btn-update-compact">
               {{ isCheckingUpdate ? '检查中...' : '🔄 检查更新' }}
@@ -354,7 +346,7 @@ const logout = async () => {
             <span class="value">{{ works.length }}</span>
           </div>
           
-          <button class="btn btn-large" @click="startDownload" :disabled="!selectedStage || works.length === 0 || isDownloading">
+          <button class="btn btn-large" @click="startDownload" :disabled="!selectedStage || works.length === 0">
             开始下载
           </button>
         </div>
@@ -457,7 +449,7 @@ const logout = async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .control-panel {
