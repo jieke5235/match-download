@@ -92,11 +92,12 @@ jobs:
           TARGET="${{ matrix.target }}"
           BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
           
-          # 根据平台查找对应的安装包
+          # 根据平台查找对应的更新包 (Tauri 更新器要求必须是压缩格式)
           if [[ "${{ matrix.platform }}" == "macos-latest" ]]; then
-            PATTERN="*.dmg"
+            PATTERN="*.app.tar.gz"
           elif [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
-            PATTERN="*.msi"
+            # Windows 通常使用 .msi.zip 或 .nsis.zip
+            PATTERN="*.zip"
           fi
           
           echo "📂 Searching in: $BUNDLE_DIR"
@@ -126,6 +127,9 @@ jobs:
               else
                 # 密码不为空，传递 --password 参数
                 echo "📝 Using key with password"
+                # 注意：这里使用 --password 标志并将密码作为参数传递
+                # 如果 tauri-cli 版本支持环境变量 TAURI_SIGNING_PRIVATE_KEY_PASSWORD，也可以直接依赖它，
+                # 但显式传递通常更可靠
                 cargo tauri signer sign \
                   "$INSTALLER" \
                   --private-key "$PRIVATE_KEY" \
